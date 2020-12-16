@@ -1,0 +1,168 @@
+---
+title: "RiboSeq HT 1.3"
+output: html_notebook
+---
+Найдите дифференциально экспрессированные гены по RNA-Seq между нормой и опухолью.
+Для этого можете использовать DESeq2 или edgeR (для DESeq есть обёртка на Python). 
+Постройте volcano plot. То же самое сделайте и для Ribo-Seq эксперимента. 
+Совпадают ли результаты дифференциальной экспрессии? 
+Какие гены оказались значимо различны по экспрессии в одном случае, а какие — в другом? 
+Выводы подкрепите графиками
+
+```{r}
+library(statmod)
+library(magrittr)
+library(dplyr)
+library(edgeR)
+library(ggplot2)
+library(VennDiagram)
+```
+Chapter 4 https://www.bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf
+```{r}
+df = read.csv('/Users/kseniadey/Desktop/NGS/HSE_RiboSeq_HT/01. RiboSeq_RNASeq_HCC_counts.tsv', sep = '\t')
+df = replace(df, is.na(df), 0)
+```
+Извлечем все RNASeq результаты
+```{r}
+RNA = df%>% select(ends_with("RNA"))
+RNA = cbind(df$geneSymbol, RNA)
+```
+Извлечем все RiboSeq результаты
+```{r}
+RPF = df%>% select(ends_with("RPF"))
+RPF = cbind(df$geneSymbol, RPF)
+```
+Сразу подготовим факторы (номер и состояние ткани) для обоих тестов
+```{r}
+patient = factor(c('LC001', 'LC001', 'LC033', 'LC033', 'LC034', 'LC034', 'LC501', 'LC501', 'LC502', 'LC502', 'LC505', 'LC505', 'LC506', 'LC506', 'LC507', 'LC507', 'LC508','LC508', 'LC509', 'LC509'))
+tissue= factor(c('Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor','Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor', 'Norm', 'Tumor'))
+```
+Дифф.экспрессия для данных RNASeq 
+```{r}
+RNA.DE = DGEList(counts = RNA[,2:21], genes = RNA[,1])
+data.frame(Sample=colnames(RNA.DE), patient, tissue)
+design.RNA = model.matrix(~ patient + tissue)
+rownames(design.RNA) = colnames(RNA.DE)
+design.RNA
+```
+```{r}
+RNA.DE = estimateDisp(RNA.DE, design.RNA, robust=TRUE) 
+RNA.DE$common.dispersion # 0.3760782 -> квадратный корень common.dispersion = коэффициент биологической вариации. То коэффициент биологической вариации приблизитоельно 0,614
+plotBCV(RNA.DE)
+```
+```{r}
+fit.RNA = glmFit(RNA.DE, design.RNA) 
+lrt.RNA = glmLRT(fit.RNA) # likelihood ratio для разницы в генах между нормальной и раковой тканями
+topTags(lrt.RNA)
+```
+
+```{r}
+o = order(lrt.RNA$table$PValue)
+cpm(RNA.DE)[o[1:10],] 
+```
+Разница между здоровыми и раковыми образцами явно заметна
+
+```{r}
+summary(decideTests(lrt.RNA))
+```
+
+
+```{r}
+plotMD(lrt.RNA)
+abline(h=c(-1, 1), col="blue")
+```
+ Аналогичная процедура для дифф.экспрессии для данных RiboSeq
+```{r}
+RPF.DE = DGEList(counts = RPF[,2:21], genes = RPF[,1],remove.zeros = TRUE)
+data.frame(Sample=colnames(RPF.DE), patient, tissue)
+design.RPF = model.matrix(~ patient + tissue)
+rownames(design.RPF ) = colnames(RPF.DE)
+design.RPF
+```
+
+
+```{r}
+RPF.DE = estimateDisp(RPF.DE, design.RPF , robust=TRUE)
+RPF.DE$common.dispersion # 0.4871409 -> коэффициент биологической вариации составляет 0,69795
+plotBCV(RPF.DE)
+```
+
+
+```{r}
+```
+
+
+```{r}
+fit.RPF = glmFit(RPF.DE, design.RPF)
+lrt.RPF = glmLRT(fit.RPF)
+topTags(lrt.RPF)
+```
+
+
+```{r}
+o = order(lrt.RPF$table$PValue)
+cpm(RPF.DE)[o[1:10],]
+```
+
+```{r}
+summary(decideTests(lrt.RPF))
+```
+
+```{r}
+plotMD(lrt.RPF)
+abline(h=c(-1, 1), col="blue")
+```
+Volcano Plot
+```{r}
+volcano.RNA = cbind(lrt.RNA$table$logFC, -log10(lrt.RNA$table$PValue))
+colnames(volcano.RNA) = c("logFC","negativeLogPval")
+DEG_vol =  lrt.RNA$table$PValue < 0.05
+plot(volcano.RNA, pch = 16, col = ifelse(DEG_vol,"red", "black"))
+```
+```{r}
+volcano.RPF = cbind(lrt.RPF$table$logFC, -log10(lrt.RPF$table$PValue))
+colnames(volcano.RPF) = c("logFC","negativeLogPval")
+DEG_vol =  lrt.RPF$table$PValue < 0.05
+plot(volcano.RPF, pch = 16, col = ifelse(DEG_vol,"purple", "black"))
+```
+Volcano plots совпадают лишь частично, sooo
+Посмотрим пересечения результатов RNASeq и RiboSeq
+```{r}
+selectedRNA = list()
+selectedRNA= lrt.RPF$genes$genes[lrt.RNA$table$PValue< 0.05 & abs(lrt.RNA$table$logFC) > 1]
+selectedRNA= na.omit(selectedRNA)
+selectedRPF= list()
+selectedRPF = lrt.RPF$genes$genes[lrt.RPF$table$PValue<0.05 & abs(lrt.RPF$table$logFC) > 1]
+selectedRPF= na.omit(selectedRPF)
+```
+```{r}
+intersect(selectedRNA,selectedRPF)
+write.table(intersect(selectedRNA,selectedRPF), 
+            file = 'genes_GO.txt', quote = F, row.names = F)
+```
+Top-3 наиболее часто встречающихся термов GO для пересечения DE генов:
+Биологические процессы:
+GO:0008152	metabolic process
+GO:0065007	biological regulation
+GO:0050896	response to stimulus	
+
+Органеллы:
+GO:0016020	membrane
+GO:0005634	nucleus	
+GO:0031974	membrane-enclosed lumen	
+
+Молекулярные функции:
+GO:0005515	protein binding	
+GO:0043167	ion binding	
+GO:0003676	nucleic acid binding
+
+Ключевые функции, особенно среди термов биологических процессов.
+```{r}
+venn.diagram(x = list("RiboSeq"= selectedRNA,"RNASeq" =selectedRPF), filename = "RNASeq vs RiboSeq.png", output = TRUE)
+```
+![VD](/Users/kseniadey/Desktop/NGS/HSE_RiboSeq_HT/RNASeq vs RiboSeq.png) 
+
+
+
+
+
